@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +45,103 @@ type OperatorStatus struct {
 type AppState struct {
 	Tickets map[string]JiraTicket
 	mu      sync.RWMutex
+	dataDir string // Add this line
+}
+
+func NewAppState(dataDir string) (*AppState, error) {
+	// Create data directory if it doesn't exist
+	absPath, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve data directory path: %v", err)
+	}
+
+	log.Printf("Initializing data directory at: %s", absPath)
+
+	if err := os.MkdirAll(absPath, 0755); err != nil {
+		// Provide more specific error messages based on common scenarios
+		switch {
+		case os.IsPermission(err):
+			return nil, fmt.Errorf("insufficient permissions to create data directory at %s\nPlease run with appropriate permissions or choose a different location", absPath)
+		case os.IsExist(err):
+			return nil, fmt.Errorf("data directory exists but is not accessible: %s", absPath)
+		default:
+			return nil, fmt.Errorf("failed to create data directory at %s: %v", absPath, err)
+		}
+	}
+
+	// Verify the directory is writable by attempting to create a test file
+	testFile := filepath.Join(absPath, "test.tmp")
+	if err := ioutil.WriteFile(testFile, []byte("test"), 0644); err != nil {
+		return nil, fmt.Errorf("data directory exists but is not writable at %s: %v", absPath, err)
+	}
+	os.Remove(testFile) // Clean up test file
+
+	log.Printf("Data directory initialized successfully at: %s", absPath)
+
+	state := &AppState{
+		Tickets: make(map[string]JiraTicket),
+		dataDir: dataDir,
+	}
+
+	// Load existing tickets from files
+	if err := state.loadTickets(); err != nil {
+		return nil, fmt.Errorf("failed to load tickets: %v", err)
+	}
+
+	return state, nil
+}
+
+func (s *AppState) loadTickets() error {
+	files, err := ioutil.ReadDir(s.dataDir)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".json") {
+			ticketID := strings.TrimSuffix(file.Name(), ".json")
+			if err := s.loadTicket(ticketID); err != nil {
+				log.Printf("Error loading ticket %s: %v", ticketID, err)
+				continue
+			}
+		}
+	}
+	return nil
+}
+
+func (s *AppState) loadTicket(ticketID string) error {
+	data, err := ioutil.ReadFile(filepath.Join(s.dataDir, ticketID+".json"))
+	if err != nil {
+		return err
+	}
+
+	var ticket JiraTicket
+	if err := json.Unmarshal(data, &ticket); err != nil {
+		return err
+	}
+
+	s.Tickets[ticketID] = ticket
+	return nil
+}
+
+func (s *AppState) saveTicket(ticket JiraTicket) error {
+	data, err := json.MarshalIndent(ticket, "", "    ")
+	if err != nil {
+		return err
+	}
+
+	filename := filepath.Join(s.dataDir, ticket.ID+".json")
+	return ioutil.WriteFile(filename, data, 0644)
+}
+
+func (s *AppState) deleteTicket(ticketID string) error {
+	filename := filepath.Join(s.dataDir, ticketID+".json")
+	if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	delete(s.Tickets, ticketID)
+	return nil
 }
 
 // QuayClient handles communication with Quay.io API
@@ -143,9 +242,15 @@ func (qc *QuayClient) GetOperatorStatus(operator string) (*OperatorStatus, error
 }
 
 func main() {
-	state := &AppState{
-		Tickets: make(map[string]JiraTicket),
+
+	log.Println("Starting Operator Update Tracker...")
+
+	// Create a new AppState with data directory
+	state, err := NewAppState("./data")
+	if err != nil {
+		log.Fatalf("Failed to initialize application state: %v", err)
 	}
+	log.Println("Application state initialized successfully")
 
 	quayClient := NewQuayClient()
 
@@ -192,6 +297,39 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
         .hidden { display: none; }
         .error { color: red; }
         .ok { color: green; }
+        .warning { color: #ff9900; }
+        .operator-input {
+            width: 100%;
+            min-height: 100px;
+            padding: 8px;
+            margin-top: 5px;
+            font-family: monospace;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .form-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .jira-input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            box-sizing: border-box;
+        }
+        .submit-button {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .submit-button:hover {
+            background-color: #45a049;
+        }
     </style>
 </head>
 <body>
@@ -204,14 +342,18 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
             <div id="addForm" class="hidden">
                 <h2>Add New Ticket</h2>
                 <div class="form-group">
-                    <label>JIRA Ticket #:</label>
-                    <input type="text" id="jiraId">
+                    <label class="form-label">JIRA Ticket #:</label>
+                    <input type="text" id="jiraId" class="jira-input">
                 </div>
                 <div class="form-group">
-                    <label>Operators (comma-separated):</label>
-                    <input type="text" id="operators" placeholder="namespace/repository, e.g., app-sre/splunk-audit-exporter">
+                    <label class="form-label">Operators:</label>
+                    <textarea 
+                        id="operators" 
+                        class="operator-input" 
+                        placeholder="Enter operators (one per line or comma-separated)&#10;Example:&#10;app-sre/splunk-audit-exporter&#10;app-sre/another-operator"
+                    ></textarea>
                 </div>
-                <button onclick="addTicket()">Add</button>
+                <button class="submit-button" onclick="addTicket()">Add Ticket</button>
             </div>
             <div id="statusDisplay"></div>
         </div>
@@ -225,14 +367,20 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
     
     function addTicket() {
         const jiraId = document.getElementById('jiraId').value;
-        const operators = document.getElementById('operators').value;
+        const operatorsText = document.getElementById('operators').value;
+        
+        // Split by either commas or newlines and clean up the results
+        const operatorsList = operatorsText
+            .split(/[,\n]/)  // Split by comma or newline
+            .map(op => op.trim())  // Remove whitespace
+            .filter(op => op.length > 0);  // Remove empty entries
         
         fetch('/api/tickets', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 id: jiraId,
-                operators: operators.split(',').map(op => op.trim())
+                operators: operatorsList
             })
         })
         .then(response => response.json())
@@ -285,46 +433,47 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
         });
     }
     
-	// Update the loadStatus function in the serveTemplate HTML/JavaScript:
-
-	function loadStatus(ticketId) {
-		document.getElementById('addForm').classList.add('hidden');
-		const statusDisplay = document.getElementById('statusDisplay');
-		statusDisplay.classList.remove('hidden');
-		statusDisplay.innerHTML = '<div>Loading...</div>';
-		
-		fetch('/api/status?ticket=' + encodeURIComponent(ticketId))
-		.then(response => response.json())
-		.then(statuses => {
-			let html = '<h2>Status for ' + ticketId + '</h2>';
-			html += '<table border="1" style="width: 100%; border-collapse: collapse;">';
-			html += '<tr><th>Operator</th><th>Last Updated</th><th>Days Old</th><th>SHA256</th><th>Status</th></tr>';
-			
-			statuses.forEach(status => {
-				const statusClass = status.status === 'OK' ? 'ok' : 'error';
-				const lastUpdated = status.lastUpdated ? new Date(status.lastUpdated) : null;
-				const daysOld = lastUpdated ? 
-					Math.floor((new Date() - lastUpdated) / (1000 * 60 * 60 * 24)) : 
-					'N/A';
-				
-				// Add warning class for old updates
-				const daysOldClass = daysOld >= 30 ? 'error' : 
-								daysOld >= 14 ? 'warning' : 
-								'ok';
-				
-				html += '<tr>';
-				html += '<td>' + status.name + '</td>';
-				html += '<td>' + (lastUpdated ? lastUpdated.toLocaleString() : 'N/A') + '</td>';
-				html += '<td class="' + daysOldClass + '">' + (daysOld !== 'N/A' ? daysOld + ' days' : 'N/A') + '</td>';
-				html += '<td style="font-family: monospace; word-break: break-all;">' + (status.sha256 || 'N/A') + '</td>';
-				html += '<td class="' + statusClass + '">' + status.status + '</td>';
-				html += '</tr>';
-			});
-			
-			html += '</table>';
-			statusDisplay.innerHTML = html;
-		});
-	}		
+    function loadStatus(ticketId) {
+        document.getElementById('addForm').classList.add('hidden');
+        const statusDisplay = document.getElementById('statusDisplay');
+        statusDisplay.classList.remove('hidden');
+        statusDisplay.innerHTML = '<div>Loading...</div>';
+        
+        fetch('/api/status?ticket=' + encodeURIComponent(ticketId))
+        .then(response => response.json())
+        .then(statuses => {
+            let html = '<h2>Status for ' + ticketId + '</h2>';
+            html += '<table border="1" style="width: 100%; border-collapse: collapse;">';
+            html += '<tr><th>Operator</th><th>Last Updated</th><th>Days Old</th><th>SHA256</th><th>Status</th></tr>';
+            
+            statuses.forEach(status => {
+                const statusClass = status.status === 'OK' ? 'ok' : 'error';
+                const lastUpdated = status.lastUpdated ? new Date(status.lastUpdated) : null;
+                const daysOld = lastUpdated ? 
+                    Math.floor((new Date() - lastUpdated) / (1000 * 60 * 60 * 24)) : 
+                    'N/A';
+                
+                const daysOldClass = daysOld >= 30 ? 'error' : 
+                                   daysOld >= 14 ? 'warning' : 
+                                   'ok';
+                
+                const daysOldText = daysOld === 'N/A' ? 'N/A' : 
+                                   daysOld === 1 ? '1 day old' :
+                                   daysOld + ' days old';
+                
+                html += '<tr>';
+                html += '<td>' + status.name + '</td>';
+                html += '<td>' + (lastUpdated ? lastUpdated.toLocaleString() : 'N/A') + '</td>';
+                html += '<td class="' + daysOldClass + '">' + daysOldText + '</td>';
+                html += '<td style="font-family: monospace; word-break: break-all;">' + (status.sha256 || 'N/A') + '</td>';
+                html += '<td class="' + statusClass + '">' + status.status + '</td>';
+                html += '</tr>';
+            });
+            
+            html += '</table>';
+            statusDisplay.innerHTML = html;
+        });
+    }
     
     // Load tickets on page load
     loadTickets();
@@ -354,6 +503,13 @@ func (s *AppState) handleTickets(w http.ResponseWriter, r *http.Request) {
 		ticket.Added = time.Now()
 		s.Tickets[ticket.ID] = ticket
 
+		// Save to file
+		if err := s.saveTicket(ticket); err != nil {
+			log.Printf("Error saving ticket: %v", err)
+			http.Error(w, "Failed to save ticket", http.StatusInternalServerError)
+			return
+		}
+
 		json.NewEncoder(w).Encode(ticket)
 
 	case "DELETE":
@@ -363,7 +519,12 @@ func (s *AppState) handleTickets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		delete(s.Tickets, ticketID)
+		if err := s.deleteTicket(ticketID); err != nil {
+			log.Printf("Error deleting ticket: %v", err)
+			http.Error(w, "Failed to delete ticket", http.StatusInternalServerError)
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
 	}
 }
