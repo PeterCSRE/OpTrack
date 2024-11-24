@@ -285,33 +285,46 @@ func serveTemplate(w http.ResponseWriter, r *http.Request) {
         });
     }
     
-    function loadStatus(ticketId) {
-        document.getElementById('addForm').classList.add('hidden');
-        const statusDisplay = document.getElementById('statusDisplay');
-        statusDisplay.classList.remove('hidden');
-        statusDisplay.innerHTML = '<div>Loading...</div>';
-        
-        fetch('/api/status?ticket=' + encodeURIComponent(ticketId))
-        .then(response => response.json())
-        .then(statuses => {
-            let html = '<h2>Status for ' + ticketId + '</h2>';
-            html += '<table border="1" style="width: 100%; border-collapse: collapse;">';
-            html += '<tr><th>Operator</th><th>Last Updated</th><th>SHA256</th><th>Status</th></tr>';
-            
-            statuses.forEach(status => {
-                const statusClass = status.status === 'OK' ? 'ok' : 'error';
-                html += '<tr>';
-                html += '<td>' + status.name + '</td>';
-                html += '<td>' + (status.lastUpdated ? new Date(status.lastUpdated).toLocaleString() : 'N/A') + '</td>';
-                html += '<td style="font-family: monospace; word-break: break-all;">' + (status.sha256 || 'N/A') + '</td>';
-                html += '<td class="' + statusClass + '">' + status.status + '</td>';
-                html += '</tr>';
-            });
-            
-            html += '</table>';
-            statusDisplay.innerHTML = html;
-        });
-    }
+	// Update the loadStatus function in the serveTemplate HTML/JavaScript:
+
+	function loadStatus(ticketId) {
+		document.getElementById('addForm').classList.add('hidden');
+		const statusDisplay = document.getElementById('statusDisplay');
+		statusDisplay.classList.remove('hidden');
+		statusDisplay.innerHTML = '<div>Loading...</div>';
+		
+		fetch('/api/status?ticket=' + encodeURIComponent(ticketId))
+		.then(response => response.json())
+		.then(statuses => {
+			let html = '<h2>Status for ' + ticketId + '</h2>';
+			html += '<table border="1" style="width: 100%; border-collapse: collapse;">';
+			html += '<tr><th>Operator</th><th>Last Updated</th><th>Days Old</th><th>SHA256</th><th>Status</th></tr>';
+			
+			statuses.forEach(status => {
+				const statusClass = status.status === 'OK' ? 'ok' : 'error';
+				const lastUpdated = status.lastUpdated ? new Date(status.lastUpdated) : null;
+				const daysOld = lastUpdated ? 
+					Math.floor((new Date() - lastUpdated) / (1000 * 60 * 60 * 24)) : 
+					'N/A';
+				
+				// Add warning class for old updates
+				const daysOldClass = daysOld >= 30 ? 'error' : 
+								daysOld >= 14 ? 'warning' : 
+								'ok';
+				
+				html += '<tr>';
+				html += '<td>' + status.name + '</td>';
+				html += '<td>' + (lastUpdated ? lastUpdated.toLocaleString() : 'N/A') + '</td>';
+				html += '<td class="' + daysOldClass + '">' + (daysOld !== 'N/A' ? daysOld + ' days' : 'N/A') + '</td>';
+				html += '<td style="font-family: monospace; word-break: break-all;">' + (status.sha256 || 'N/A') + '</td>';
+				html += '<td class="' + statusClass + '">' + status.status + '</td>';
+				html += '</tr>';
+			});
+			
+			html += '</table>';
+			statusDisplay.innerHTML = html;
+		});
+	}		
     
     // Load tickets on page load
     loadTickets();
