@@ -1,6 +1,8 @@
 # OpTrack
 - Quick webapp to track version updates of OpenShift operators on quay.io.
 
+---
+
 When creating a new ticket, you can enter the operator repositories you wish to track in namespace/repository format.
 <img width="605" alt="New Ticket png" src="https://github.com/user-attachments/assets/38701619-a314-4766-bcd3-72c66dfef4ff">
 
