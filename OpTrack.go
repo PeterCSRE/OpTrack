@@ -19,12 +19,16 @@ type JiraTicket struct {
 	Added     time.Time `json:"added"`
 }
 
+// QuayTagInfo represents a single tag in the Quay.io API response
+type QuayTagInfo struct {
+	Name           string `json:"name"`
+	LastModified   string `json:"last_modified"`
+	ManifestDigest string `json:"manifest_digest"`
+}
+
 // QuayTagResponse represents the Quay.io API response
 type QuayTagResponse struct {
-	Tags map[string]struct {
-		LastModified   time.Time `json:"last_modified"`
-		ManifestDigest string    `json:"manifest_digest"`
-	} `json:"tags"`
+	Tags []QuayTagInfo `json:"tags"`
 }
 
 // OperatorStatus represents the status of an operator in Quay.io
@@ -53,7 +57,6 @@ func NewQuayClient() *QuayClient {
 }
 
 func (qc *QuayClient) GetOperatorStatus(operator string) (*OperatorStatus, error) {
-	// Split operator into namespace and repository
 	parts := strings.Split(operator, "/")
 	if len(parts) != 2 {
 		return &OperatorStatus{
@@ -89,36 +92,52 @@ func (qc *QuayClient) GetOperatorStatus(operator string) (*OperatorStatus, error
 		}, nil
 	}
 
+	// Debug logging
+	log.Printf("Raw Quay.io response for %s: %s", operator, string(body))
+
 	var tagResponse QuayTagResponse
 	if err := json.Unmarshal(body, &tagResponse); err != nil {
+		log.Printf("Failed to parse JSON: %v", err)
 		return &OperatorStatus{
 			Name:   operator,
-			Status: "Failed to parse response",
+			Status: fmt.Sprintf("Parse error: %v", err),
 		}, nil
 	}
 
-	var lastModified time.Time
-	var manifestDigest string
-
-	// Find most recent tag
-	for _, tagInfo := range tagResponse.Tags {
-		if tagInfo.LastModified.After(lastModified) {
-			lastModified = tagInfo.LastModified
-			manifestDigest = tagInfo.ManifestDigest
-		}
-	}
-
-	if lastModified.IsZero() {
+	if len(tagResponse.Tags) == 0 {
 		return &OperatorStatus{
 			Name:   operator,
 			Status: "No tags found",
 		}, nil
 	}
 
+	// Find the most recent tag
+	var latestTag QuayTagInfo
+	latestTime := time.Time{}
+
+	for _, tag := range tagResponse.Tags {
+		tagTime, err := time.Parse(time.RFC1123Z, tag.LastModified)
+		if err != nil {
+			log.Printf("Failed to parse time %s: %v", tag.LastModified, err)
+			continue
+		}
+		if tagTime.After(latestTime) {
+			latestTime = tagTime
+			latestTag = tag
+		}
+	}
+
+	if latestTime.IsZero() {
+		return &OperatorStatus{
+			Name:   operator,
+			Status: "No valid timestamps found",
+		}, nil
+	}
+
 	return &OperatorStatus{
 		Name:        operator,
-		LastUpdated: lastModified,
-		SHA256:      strings.TrimPrefix(manifestDigest, "sha256:"),
+		LastUpdated: latestTime,
+		SHA256:      strings.TrimPrefix(latestTag.ManifestDigest, "sha256:"),
 		Status:      "OK",
 	}, nil
 }
