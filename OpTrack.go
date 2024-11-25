@@ -18,7 +18,7 @@ import (
 type JiraTicket struct {
 	ID        string    `json:"id"`
 	Operators []string  `json:"operators"`
-	Added     time.Time `json:"added"`
+	Added     time.Time `json:"added"` //Is this needed anymore?
 }
 
 // QuayTagInfo represents a single tag in the Quay.io API response
@@ -45,7 +45,7 @@ type OperatorStatus struct {
 type AppState struct {
 	Tickets map[string]JiraTicket
 	mu      sync.RWMutex
-	dataDir string // Add this line
+	dataDir string 
 }
 
 func NewAppState(dataDir string) (*AppState, error) {
@@ -58,7 +58,6 @@ func NewAppState(dataDir string) (*AppState, error) {
 	log.Printf("Initializing data directory at: %s", absPath)
 
 	if err := os.MkdirAll(absPath, 0755); err != nil {
-		// Provide more specific error messages based on common scenarios
 		switch {
 		case os.IsPermission(err):
 			return nil, fmt.Errorf("insufficient permissions to create data directory at %s\nPlease run with appropriate permissions or choose a different location", absPath)
@@ -74,7 +73,7 @@ func NewAppState(dataDir string) (*AppState, error) {
 	if err := ioutil.WriteFile(testFile, []byte("test"), 0644); err != nil {
 		return nil, fmt.Errorf("data directory exists but is not writable at %s: %v", absPath, err)
 	}
-	os.Remove(testFile) // Clean up test file
+	os.Remove(testFile) 
 
 	log.Printf("Data directory initialized successfully at: %s", absPath)
 
@@ -83,7 +82,6 @@ func NewAppState(dataDir string) (*AppState, error) {
 		dataDir: dataDir,
 	}
 
-	// Load existing tickets from files
 	if err := state.loadTickets(); err != nil {
 		return nil, fmt.Errorf("failed to load tickets: %v", err)
 	}
